@@ -1,0 +1,18 @@
+[project]
+name = "rice-env"
+version = "0.1.0"
+description = "RICE-ENV: Agricultural Decision Intelligence OpenEnv environment"
+requires-python = ">=3.10"
+dependencies = [
+  "openenv-core",
+  "fastapi>=0.104.0",
+  "uvicorn>=0.24.0",
+  "pydantic>=2.0.0",
+  "requests>=2.25.0",
+  "gradio>=4.0.0",
+  "plotly>=5.15.0"
+]
+
+[tool.setuptools]
+packages = ["rice_env", "server", "ui"]
+
