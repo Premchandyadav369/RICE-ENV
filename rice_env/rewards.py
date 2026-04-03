@@ -9,7 +9,7 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-def compute_soil_health(soil_moisture: float, fertility_level: float, crop: str) -> float:
+def compute_soil_health(soil_moisture: float, fertility_level: float, crop: str, soil_ph: float = 6.5) -> float:
     """
     A smooth proxy for “resource alignment” (used for shaping).
     """
@@ -17,7 +17,8 @@ def compute_soil_health(soil_moisture: float, fertility_level: float, crop: str)
     ideal_f = CROP_PARAMS[crop].ideal_fertility
     moisture_score = 1.0 - min(abs(soil_moisture - ideal_m) / max(1.0, ideal_m), 1.0)
     fertility_score = 1.0 - min(abs(fertility_level - ideal_f) / max(1.0, ideal_f), 1.0)
-    return float(clamp01(0.6 * moisture_score + 0.4 * fertility_score))
+    ph_score = 1.0 - min(abs(soil_ph - 6.5) / 2.5, 1.0)
+    return float(clamp01(0.4 * moisture_score + 0.3 * fertility_score + 0.3 * ph_score))
 
 
 def shaped_reward(

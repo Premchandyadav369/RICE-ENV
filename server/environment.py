@@ -14,6 +14,7 @@ from rice_env.simulator import (
     step_simulation,
 )
 from rice_env.graders import compute_final_score, compute_scores
+from rice_env.rewards import compute_soil_health
 
 
 class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
@@ -74,7 +75,7 @@ class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
         # Clamp to allowed strings; keep validators happy.
         if task not in ("easy", "medium", "hard"):
             task = "hard"
-        if scenario not in ("normal", "drought", "flood"):
+        if scenario not in ("normal", "drought", "flood", "monsoon", "heatwave", "pest_outbreak"):
             scenario = "normal"
 
         rng_for_params = random.Random(seed if seed is not None else 42)
@@ -121,14 +122,18 @@ class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
             rainfall_forecast=state.rainfall_forecast,
             temperature=state.temperature,
             market_price=state.market_price,
+            pest_level=state.pest_level,
+            soil_ph=state.soil_ph,
             crop_planted=state.crop_planted,
             crop_stage=state.crop_stage,
             growth_progress=state.growth_progress,
             profit_so_far=state.profit,
             yield_estimate=0.0,
+            carbon_footprint=state.carbon_footprint,
             yield_score=None,
             profit_score=None,
             efficiency_score=None,
+            sustainability_score=None,
             final_score=None,
             explainability=state.explainability_last,
         )
@@ -170,15 +175,25 @@ class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
             yield_amount_scoring = float(state.yield_amount if state.sold else yield_est)
             profit_scoring = float(state.profit if state.sold else 0.0)
 
+            soil_health_final = 0.5
+            if state.crop_planted:
+                soil_health_final = compute_soil_health(
+                    state.soil_moisture, state.fertility_level, state.crop_planted, state.soil_ph
+                )
+
             scores = compute_scores(
                 yield_amount=yield_amount_scoring,
                 profit=profit_scoring,
                 water_used=float(state.water_used),
                 fertilizer_used=float(state.fertilizer_used),
+                pesticide_used=float(state.pesticide_used),
+                carbon_footprint=float(state.carbon_footprint),
+                soil_health=soil_health_final,
                 optimal_yield=float(state.optimal_yield),
                 optimal_profit=float(state.optimal_profit),
                 optimal_water=float(state.optimal_water),
                 optimal_fertilizer=float(state.optimal_fertilizer),
+                optimal_pesticide=float(state.optimal_pesticide),
             )
             final_score = compute_final_score(task=state.task, scores=scores)
             reward = float(final_score)
@@ -195,6 +210,7 @@ class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
                     "yield_score": float(scores["yield_score"]),
                     "profit_score": float(scores["profit_score"]),
                     "efficiency_score": float(scores["efficiency_score"]),
+                    "sustainability_score": float(scores["sustainability_score"]),
                     "final_score": float(final_score),
                 },
                 "task": state.task,
@@ -213,14 +229,18 @@ class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
             rainfall_forecast=state.rainfall_forecast,
             temperature=state.temperature,
             market_price=state.market_price,
+            pest_level=state.pest_level,
+            soil_ph=state.soil_ph,
             crop_planted=state.crop_planted,
             crop_stage=state.crop_stage,
             growth_progress=state.growth_progress,
             profit_so_far=float(state.profit),
             yield_estimate=float(yield_est),
+            carbon_footprint=float(state.carbon_footprint),
             yield_score=state.explainability_last.get("scores", {}).get("yield_score"),
             profit_score=state.explainability_last.get("scores", {}).get("profit_score"),
             efficiency_score=state.explainability_last.get("scores", {}).get("efficiency_score"),
+            sustainability_score=state.explainability_last.get("scores", {}).get("sustainability_score"),
             final_score=state.explainability_last.get("scores", {}).get("final_score"),
             explainability=state.explainability_last,
         )
@@ -230,6 +250,6 @@ class RiceEnvironment(Environment[FarmAction, FarmObservation, FarmState]):
         return {
             "env_name": "rice-env",
             "task_types": ["easy", "medium", "hard"],
-            "scenarios": ["normal", "drought", "flood"],
+            "scenarios": ["normal", "drought", "flood", "monsoon", "heatwave", "pest_outbreak"],
         }
 

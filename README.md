@@ -20,11 +20,12 @@ RICE-ENV provides a sandbox for training agents that can assist real-world farme
 ---
 
 ## ✨ Key Features
-- **Dynamic Physics Engine**: Soil moisture, fertility levels, and temperature dynamics influenced by stochastic weather and resource application.
-- **Explainable Observations**: Every step includes an `explainability` block detailing risks (e.g., overwatering) and the environment's internal "reasoning."
-- **Scenario Diversity**: Pre-configured `Normal`, `Drought`, and `Flood` modes to test agent robustness.
-- **Interactive Dashboard**: Custom Gradio UI with real-time Plotly charts for human-AI collaboration.
-- **Reward Shaping**: Dense rewards that provide continuous feedback on growth progress and soil health.
+- **Enhanced Physics Engine**: Advanced modeling of **Soil pH**, **Carbon Footprint**, and **Pest Dynamics**.
+- **Indian Agricultural Context**: Native support for Indian crops like **Mustard** and **Sugarcane**, alongside regional scenarios like **Monsoon** and **Heatwaves**.
+- **Explainable Observations**: Every step includes an `explainability` block detailing risks (e.g., pest outbreaks, pH imbalance) and the environment's internal "reasoning."
+- **Scenario Diversity**: Pre-configured `Normal`, `Drought`, `Flood`, `Monsoon`, `Heatwave`, and `Pest Outbreak` modes.
+- **Advanced Interactive Dashboard**: Revamped Gradio UI with multi-metric Plotly charts, an Episode History table, and real-time Sustainability tracking.
+- **Sustainability Scoring**: Rewards agents for minimizing carbon footprint and maintaining soil health.
 
 ---
 
@@ -40,30 +41,32 @@ What sets RICE-ENV apart for the **OpenEnv Round 1 Hackathon**:
 
 ### 📥 Observation Space
 The agent receives a structured state via the `FarmObservation` model:
-- **Weather & Soil**: Day, Soil Type, Moisture (0-100), Fertility (0-100), Temperature, Rainfall Forecast.
-- **Crop Progress**: Planted Crop (Rice/Wheat/Maize), Stage (Sowing → Harvest), Growth Progress (0.0-1.0).
+- **Weather & Soil**: Day, Soil Type, Moisture, Fertility, Temperature, Rainfall Forecast, **Soil pH**, **Pest Level**.
+- **Crop Progress**: Planted Crop (**Rice/Wheat/Maize/Mustard/Sugarcane**), Stage, Growth Progress.
+- **Sustainability**: **Carbon Footprint** (CO2e) based on resource usage.
 - **Economics**: Live Market Prices, Current Profit, Estimated Yield.
-- **Scores**: Real-time feedback on Yield, Profit, and Efficiency (0.0-1.0).
+- **Scores**: Real-time feedback on Yield, Profit, Efficiency, and **Sustainability**.
 
 ### 📤 Action Space
 - `plant(crop)`: Sow one of the supported crops.
 - `irrigate(amount)`: Apply water (0-40 units).
-- `fertilize(type, qty)`: Boost soil fertility levels.
-- `wait(days)`: Skip 1-3 days to observe growth.
-- `sell(quantity_mult)`: Harvest and sell produce (only at Harvest stage).
+- `fertilize(type, qty)`: Boost soil fertility (affects pH).
+- `pesticide(qty)`: Manage pest levels (affects carbon footprint).
+- `wait(days)`: Observe growth dynamics.
+- `sell(quantity_mult)`: Harvest and sell produce.
 
 ---
 
 ## 🏆 Tasks & Grading
-RICE-ENV implements a tiered difficulty system:
+RICE-ENV implements a tiered difficulty system focused on **Sustainable Intensification**:
 
-| Task | Objective | Scoring Metric (0.0 - 1.0) |
+| Task | Objective | Scoring Metric |
 | :--- | :--- | :--- |
-| **Easy** | Crop Selection | `100% Yield Score` |
-| **Medium** | Yield Optimization | `70% Yield + 30% Efficiency` |
-| **Hard** | Profit Maximization | `50% Profit + 30% Yield + 20% Efficiency` |
+| **Easy** | Crop Selection | `80% Yield + 20% Sustainability` |
+| **Medium** | Yield Optimization | `60% Yield + 20% Efficiency + 20% Sustainability` |
+| **Hard** | Profit Maximization | `40% Profit + 20% Yield + 20% Efficiency + 20% Sustainability` |
 
-*Efficiency is calculated by penalizing resource waste relative to ideal consumption.*
+*Sustainability is calculated by balancing Soil Health (pH/Fertility) and Carbon Footprint (Resource usage).*
 
 ---
 
@@ -98,18 +101,33 @@ Access the dashboard at `http://localhost:8000/web`.
 
 ## ☁️ End-to-End Deployment Guide
 
-### Hugging Face Spaces (Production)
-1. **New Space**: Create a Docker Space on Hugging Face.
-2. **Secrets**: Add `K2_API_KEY` in the Space settings.
-3. **Deployment**:
+### 🥇 Recommended: Hugging Face Spaces
+Hugging Face Spaces is the ideal platform for RICE-ENV due to its native support for Docker and Gradio.
+
+1. **Create Space**: Go to [huggingface.co/new-space](https://huggingface.co/new-space).
+2. **Setup**:
+   - **Space Name**: `rice-env`
+   - **SDK**: `Docker`
+   - **Template**: `Blank`
+3. **Configure Secrets**:
+   - Navigate to **Settings** > **Variables and secrets**.
+   - Add `K2_API_KEY` with your API key from [api.k2think.ai](https://api.k2think.ai).
+4. **Deploy**:
    ```bash
-   git remote add space https://huggingface.co/spaces/YOUR_USER/YOUR_SPACE
+   git remote add space https://huggingface.co/spaces/YOUR_USERNAME/rice-env
    git push space main
    ```
-4. **Verification**: Run `openenv validate --url YOUR_SPACE_URL`.
+5. **Verify**: Once the build is complete, your dashboard will be live! Verify with:
+   ```bash
+   openenv validate --url https://huggingface.co/spaces/YOUR_USERNAME/rice-env
+   ```
 
-### Streamlit Cloud / Vercel
-While RICE-ENV is optimized for Docker/FastAPI, it can be deployed to any platform supporting containerized Python applications. For Streamlit-like experience, the Gradio UI is automatically served at the `/web` endpoint.
+### 🥈 Alternative: Render / Railway
+For standard cloud hosting:
+1. Connect your GitHub repository to [Render](https://render.com) or [Railway](https://railway.app).
+2. Set the **Build Command** to `pip install -r requirements.txt`.
+3. Set the **Start Command** to `uvicorn server.app:app --host 0.0.0.0 --port $PORT`.
+4. Add the `K2_API_KEY` environment variable.
 
 ---
 
