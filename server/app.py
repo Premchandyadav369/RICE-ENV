@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+from fastapi.responses import RedirectResponse
 from openenv.core.env_server import create_app
 
 from models import FarmAction, FarmObservation
@@ -25,6 +26,11 @@ app = create_app(
     max_concurrent_envs=max_concurrent,
     gradio_builder=build_gradio,
 )
+
+
+@app.get("/")
+async def root_redirect():
+    return RedirectResponse(url="/web")
 
 
 def main():
