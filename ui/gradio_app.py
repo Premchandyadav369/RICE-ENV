@@ -101,6 +101,13 @@ def _parse_action_from_text(text: str) -> Dict[str, Any]:
                 return {"action_type": "sell", "sell_quantity": float(args[0]), "parameters": {}}
             except Exception:
                 pass
+    if "pesticide" in t:
+        args = _call("pesticide")
+        if args:
+            try:
+                return {"action_type": "pesticide", "pesticide_qty": float(args[0]), "parameters": {}}
+            except Exception:
+                pass
 
     # Fallback: wait 1
     return {"action_type": "wait", "days": 1, "parameters": {}}
@@ -120,12 +127,13 @@ async def k2_choose_action(*, observation: Dict[str, Any], task: str) -> Dict[st
         "Return ONLY a JSON object for the next action. No extra text.\n\n"
         "Action JSON schema:\n"
         "{"  # keep braces visible in string
-        "\"action_type\": \"plant|irrigate|fertilize|wait|sell\","
-        "\"crop\": \"rice|wheat|maize\" (only for plant),"
+        "\"action_type\": \"plant|irrigate|fertilize|wait|sell|pesticide\","
+        "\"crop\": \"rice|wheat|maize|mustard|sugarcane\" (only for plant),"
         "\"amount\": number (only for irrigate),"
         "\"fertilizer_type\": string, \"fertilizer_qty\": number (only for fertilize),"
         "\"days\": integer (only for wait),"
         "\"sell_quantity\": number (only for sell),"
+        "\"pesticide_qty\": number (only for pesticide),"
         "\"parameters\": {} \n"
         "}\n\n"
         "Rules:\n"
@@ -178,25 +186,49 @@ async def k2_choose_action(*, observation: Dict[str, Any], task: str) -> Dict[st
     return action
 
 
-def _plot_profit(history: List[Dict[str, Any]]):
+def _plot_metrics(history: List[Dict[str, Any]]):
     # history elements are per-step observations
     xs = list(range(len(history)))
     profits = [float(h.get("profit_so_far", 0.0) or 0.0) for h in history]
+    pests = [float(h.get("pest_level", 0.0) or 0.0) for h in history]
+    moisture = [float(h.get("soil_moisture", 0.0) or 0.0) for h in history]
+
     try:
         import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=xs, y=profits, mode="lines+markers", name="Profit so far"))
+        fig = make_subplots(rows=2, cols=1, subplot_titles=("Profit over time", "Pests & Moisture"))
+
+        fig.add_trace(go.Scatter(x=xs, y=profits, mode="lines+markers", name="Profit"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=xs, y=pests, mode="lines+markers", name="Pests"), row=2, col=1)
+        fig.add_trace(go.Scatter(x=xs, y=moisture, mode="lines+markers", name="Moisture"), row=2, col=1)
+
         fig.update_layout(
-            height=320,
-            margin=dict(l=20, r=20, t=20, b=20),
-            xaxis_title="Step",
-            yaxis_title="Profit",
+            height=600,
+            margin=dict(l=20, r=20, t=40, b=20),
         )
         return fig
     except Exception:
         # Fallback: show raw points.
         return {"x": xs, "y": profits}
+
+def _build_history_table(history: List[Dict[str, Any]]):
+    if not history:
+        return []
+
+    rows = []
+    for i, obs in enumerate(history):
+        rows.append([
+            i,
+            obs.get("day", i),
+            obs.get("crop_planted") or "None",
+            obs.get("crop_stage", "none"),
+            f"{obs.get('growth_progress', 0):.2f}",
+            f"{obs.get('soil_moisture', 0):.1f}",
+            f"{obs.get('pest_level', 0):.1f}",
+            f"{obs.get('profit_so_far', 0):.1f}"
+        ])
+    return rows
 
 
 def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick_start_md) -> gr.Blocks:
@@ -206,7 +238,7 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
         with gr.Row():
             with gr.Column(scale=1):
                 task = gr.Dropdown(["easy", "medium", "hard"], value="hard", label="Task")
-                scenario = gr.Dropdown(["normal", "drought", "flood"], value="normal", label="Scenario")
+                scenario = gr.Dropdown(["normal", "drought", "flood", "monsoon", "heatwave", "pest_outbreak"], value="normal", label="Scenario")
                 seed = gr.Number(value=42, precision=0, label="Seed (optional)")
 
                 mode = gr.Radio(["AI Mode (K2 Think)", "Human Mode"], value="AI Mode (K2 Think)", label="Mode")
@@ -219,12 +251,13 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
 
                 # Human action controls (always visible; ignored in AI mode)
                 action_type = gr.Dropdown(
-                    ["plant", "irrigate", "fertilize", "wait", "sell"], value="wait", label="Action type"
+                    ["plant", "irrigate", "fertilize", "wait", "sell", "pesticide"], value="wait", label="Action type"
                 )
-                human_crop = gr.Dropdown(["rice", "wheat", "maize"], value="rice", label="Crop (plant)")
+                human_crop = gr.Dropdown(["rice", "wheat", "maize", "mustard", "sugarcane"], value="rice", label="Crop (plant)")
                 human_amount = gr.Slider(0, 40, value=10, step=1, label="Amount (irrigate)")
                 human_fert_type = gr.Textbox(value="NPK", label="Fertilizer type (fertilize)")
                 human_fert_qty = gr.Slider(0, 60, value=20, step=1, label="Fertilizer qty (fertilize)")
+                human_pesticide_qty = gr.Slider(0, 20, value=5, step=1, label="Pesticide qty (pesticide)")
                 human_days = gr.Slider(0, 3, value=1, step=1, label="Days (wait)")
                 human_sell_qty = gr.Slider(0, 1.2, value=1.0, step=0.1, label="Sell qty multiplier (sell)")
 
@@ -236,8 +269,12 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 done_box = gr.Markdown("Status: running")
 
             with gr.Column(scale=2):
-                profit_plot = gr.Plot(label="Profit over time")
-                metrics_json = gr.JSON(label="Scores (when available)")
+                main_plot = gr.Plot(label="Environmental Dynamics")
+                metrics_json = gr.JSON(label="Scores (Current vs Optimal)")
+                history_table = gr.Dataframe(
+                    headers=["Step", "Day", "Crop", "Stage", "Growth", "Moisture", "Pests", "Profit"],
+                    label="Episode History"
+                )
 
         episode_history = gr.State([])  # list of observation dicts
 
@@ -254,6 +291,7 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 "yield_score": obs.get("yield_score"),
                 "profit_score": obs.get("profit_score"),
                 "efficiency_score": obs.get("efficiency_score"),
+                "sustainability_score": obs.get("sustainability_score"),
                 "final_score": obs.get("final_score"),
             }
             logs_text = f"[RESET] task={task_value} scenario={scenario_value}\n"
@@ -266,8 +304,9 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 logs_text,
                 status,
                 episode_history,
-                _plot_profit(episode_history),
+                _plot_metrics(episode_history),
                 metrics,
+                _build_history_table(episode_history),
             )
 
         def build_human_action() -> Dict[str, Any]:
@@ -285,6 +324,7 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
             human_amount_value: float,
             human_fert_type_value: str,
             human_fert_qty_value: float,
+            human_pesticide_qty_value: float,
             human_days_value: int,
             human_sell_qty_value: float,
             current_history: List[Dict[str, Any]],
@@ -304,13 +344,15 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                     current_logs + "\n[SKIP] Episode already done.",
                     "Status: done",
                     current_history,
-                    _plot_profit(current_history),
+                    _plot_metrics(current_history),
                     {
                         "yield_score": last_obs.get("yield_score"),
                         "profit_score": last_obs.get("profit_score"),
                         "efficiency_score": last_obs.get("efficiency_score"),
+                        "sustainability_score": last_obs.get("sustainability_score"),
                         "final_score": last_obs.get("final_score"),
                     },
+                    _build_history_table(current_history),
                 )
 
             if mode_value.startswith("AI"):
@@ -326,6 +368,8 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                     action_data = {"action_type": "irrigate", "amount": float(human_amount_value), "parameters": {}}
                 elif human_action_type == "fertilize":
                     action_data = {"action_type": "fertilize", "fertilizer_type": human_fert_type_value, "fertilizer_qty": float(human_fert_qty_value), "parameters": {}}
+                elif human_action_type == "pesticide":
+                    action_data = {"action_type": "pesticide", "pesticide_qty": float(human_pesticide_qty_value), "parameters": {}}
                 elif human_action_type == "wait":
                     action_data = {"action_type": "wait", "days": int(human_days_value), "parameters": {}}
                 else:
@@ -350,6 +394,7 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 "yield_score": obs.get("yield_score"),
                 "profit_score": obs.get("profit_score"),
                 "efficiency_score": obs.get("efficiency_score"),
+                "sustainability_score": obs.get("sustainability_score"),
                 "final_score": obs.get("final_score"),
             }
 
@@ -359,8 +404,9 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 new_logs,
                 "Status: done" if done_now else "Status: running",
                 current_history,
-                _plot_profit(current_history),
+                _plot_metrics(current_history),
                 metrics,
+                _build_history_table(current_history),
             )
 
         async def do_auto_run(
@@ -399,6 +445,7 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 "yield_score": final_obs.get("yield_score"),
                 "profit_score": final_obs.get("profit_score"),
                 "efficiency_score": final_obs.get("efficiency_score"),
+                "sustainability_score": final_obs.get("sustainability_score"),
                 "final_score": final_obs.get("final_score"),
             }
             return (
@@ -407,14 +454,15 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 logs_text,
                 "Status: done",
                 current_history,
-                _plot_profit(current_history),
+                _plot_metrics(current_history),
                 metrics,
+                _build_history_table(current_history),
             )
 
         reset_btn.click(
             fn=do_reset,
             inputs=[task, scenario, seed, explain_mode],
-            outputs=[state_json, ai_json, logs, done_box, episode_history, profit_plot, metrics_json],
+            outputs=[state_json, ai_json, logs, done_box, episode_history, main_plot, metrics_json, history_table],
         )
 
         step_btn.click(
@@ -429,18 +477,19 @@ def build_gradio(web_manager, action_fields, metadata, is_chat_env, title, quick
                 human_amount,
                 human_fert_type,
                 human_fert_qty,
+                human_pesticide_qty,
                 human_days,
                 human_sell_qty,
                 episode_history,
                 logs,
             ],
-            outputs=[state_json, ai_json, logs, done_box, episode_history, profit_plot, metrics_json],
+            outputs=[state_json, ai_json, logs, done_box, episode_history, main_plot, metrics_json, history_table],
         )
 
         auto_btn.click(
             fn=do_auto_run,
             inputs=[mode, explain_mode, task, scenario, episode_history],
-            outputs=[state_json, ai_json, logs, done_box, episode_history, profit_plot, metrics_json],
+            outputs=[state_json, ai_json, logs, done_box, episode_history, main_plot, metrics_json, history_table],
         )
 
     return demo

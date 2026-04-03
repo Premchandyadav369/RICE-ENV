@@ -16,6 +16,12 @@ class EpisodeConfig:
     episode_horizon_days: int = 8
     irrigation_cost_per_unit: float = 0.05
     fertilizer_cost_per_unit: float = 0.11
+    pesticide_cost_per_unit: float = 0.25
+
+    # Carbon footprint coefficients (CO2e units per unit used)
+    irrigation_carbon: float = 0.12
+    fertilizer_carbon: float = 2.4
+    pesticide_carbon: float = 5.2
 
     # Dynamics coefficients
     evaporation_per_deg: float = 0.35
@@ -32,6 +38,10 @@ def _scenario_temperature_multiplier(scenario: str) -> float:
         return 1.05
     if scenario == "flood":
         return 0.98
+    if scenario == "monsoon":
+        return 0.95
+    if scenario == "heatwave":
+        return 1.15
     return 1.0
 
 
@@ -40,6 +50,10 @@ def _scenario_rain_multiplier(scenario: str) -> float:
         return 0.78
     if scenario == "flood":
         return 1.28
+    if scenario == "monsoon":
+        return 1.45
+    if scenario == "heatwave":
+        return 0.65
     return 1.0
 
 
@@ -129,7 +143,7 @@ def step_simulation(
 
     prev_growth = ns.growth_progress
     prev_soil_health = (
-        compute_soil_health(ns.soil_moisture, ns.fertility_level, ns.crop_planted)
+        compute_soil_health(ns.soil_moisture, ns.fertility_level, ns.crop_planted, ns.soil_ph)
         if ns.crop_planted is not None
         else 0.5
     )
@@ -137,6 +151,7 @@ def step_simulation(
     # Parse action inputs into “desired” resource changes for this day.
     irrigation_amount = 0.0
     fertilizer_qty = 0.0
+    pesticide_qty = 0.0
     fertilizer_type = action.fertilizer_type or "NPK"
 
     planted_wrong_crop = False
@@ -169,6 +184,15 @@ def step_simulation(
             ns.explainability_last = {"reason": f"Applying fertilizer {fertilizer_type} qty={fertilizer_qty:.1f}."}
         else:
             ns.explainability_last = {"reason": "Fertilize action ignored (no crop or no fertilizer)."}
+
+    elif action.action_type == "pesticide":
+        if ns.crop_planted is not None and ns.pesticide_stock > 0 and action.pesticide_qty is not None:
+            pesticide_qty = float(action.pesticide_qty)
+            pesticide_qty = _clamp(pesticide_qty, 0.0, 20.0)
+            pesticide_qty = min(pesticide_qty, ns.pesticide_stock)
+            ns.explainability_last = {"reason": f"Applying pesticide qty={pesticide_qty:.1f}."}
+        else:
+            ns.explainability_last = {"reason": "Pesticide action ignored (no crop or no stock)."}
 
     elif action.action_type == "wait":
         # Wait is “do nothing”; days can be >0 but we keep per-step dynamics simple.
@@ -213,10 +237,30 @@ def step_simulation(
     if irrigation_amount > 0:
         ns.water_level = max(0.0, ns.water_level - irrigation_amount)
         ns.water_used += irrigation_amount
+        ns.carbon_footprint += irrigation_amount * episode_config.irrigation_carbon
     if fertilizer_qty > 0:
         ns.fertilizer_stock = max(0.0, ns.fertilizer_stock - fertilizer_qty)
         ns.fertilizer_used += fertilizer_qty
         ns.fertility_level = _clamp(ns.fertility_level + fertilizer_qty * 0.55, 0.0, 100.0)
+        ns.carbon_footprint += fertilizer_qty * episode_config.fertilizer_carbon
+        # Soil pH dynamics: NPK fertilizer tends to acidify soil
+        ns.soil_ph = _clamp(ns.soil_ph - fertilizer_qty * 0.02, 4.0, 9.0)
+
+    if pesticide_qty > 0:
+        ns.pesticide_stock = max(0.0, ns.pesticide_stock - pesticide_qty)
+        ns.pesticide_used += pesticide_qty
+        ns.pest_level = max(0.0, ns.pest_level - pesticide_qty * 5.0)
+        ns.carbon_footprint += pesticide_qty * episode_config.pesticide_carbon
+
+    # Pest Dynamics: Pests grow in warm, moist conditions
+    pest_growth = 0.5
+    if ns.soil_moisture > 65:
+        pest_growth += 1.5
+    if ns.temperature > 28:
+        pest_growth += 1.2
+    if ns.scenario == "pest_outbreak":
+        pest_growth *= 2.5
+    ns.pest_level = _clamp(ns.pest_level + pest_growth, 0.0, 100.0)
 
     # Crop growth progression
     prev_stage = ns.crop_stage
@@ -241,7 +285,17 @@ def step_simulation(
         ns.cumulative_overwater += overwater_amount
         ns.cumulative_overfertilizer += overfert_amount
 
+        # Pest damage
+        pest_damage = (ns.pest_level / 100.0) * 0.15
+        ns.cumulative_pest_damage += pest_damage
+
+        # pH penalty
+        ph_penalty = 0.0
+        if ns.soil_ph < 5.5 or ns.soil_ph > 7.5:
+            ph_penalty = abs(ns.soil_ph - 6.5) * 0.05
+
         growth_rate = params.base_growth_rate * (0.25 + 0.75 * moisture_alignment) * (0.3 + 0.7 * fertility_alignment) * temperature_factor
+        growth_rate = max(0.0, growth_rate - pest_damage - ph_penalty)
         ns.growth_progress = _clamp(ns.growth_progress + growth_rate, 0.0, 1.0)
 
         # Stage logic
@@ -268,7 +322,7 @@ def step_simulation(
         elif not ns.sold:
             # Compute yield and profit at harvest.
             params = CROP_PARAMS[ns.crop_planted]
-            soil_health = compute_soil_health(ns.soil_moisture, ns.fertility_level, ns.crop_planted)
+            soil_health = compute_soil_health(ns.soil_moisture, ns.fertility_level, ns.crop_planted, ns.soil_ph)
 
             stress_factor = 0.55 + 0.45 * soil_health
             ns.yield_amount = params.base_yield * ns.growth_progress * stress_factor
@@ -285,6 +339,7 @@ def step_simulation(
                 ns.yield_amount * price_today
                 - episode_config.irrigation_cost_per_unit * ns.water_used
                 - episode_config.fertilizer_cost_per_unit * ns.fertilizer_used
+                - episode_config.pesticide_cost_per_unit * ns.pesticide_used
             )
 
             ns.sold = True
@@ -310,7 +365,7 @@ def step_simulation(
 
     # 5) Compute shaped reward (dense)
     soil_health_now = (
-        compute_soil_health(ns.soil_moisture, ns.fertility_level, ns.crop_planted)
+        compute_soil_health(ns.soil_moisture, ns.fertility_level, ns.crop_planted, ns.soil_ph)
         if ns.crop_planted is not None
         else 0.5
     )
@@ -335,10 +390,14 @@ def step_simulation(
         profit=float(max(0.0, ns.profit)),
         water_used=float(ns.water_used),
         fertilizer_used=float(ns.fertilizer_used),
+        pesticide_used=float(ns.pesticide_used),
+        carbon_footprint=float(ns.carbon_footprint),
+        soil_health=soil_health_now,
         optimal_yield=float(ns.optimal_yield),
         optimal_profit=float(ns.optimal_profit),
         optimal_water=float(ns.optimal_water),
         optimal_fertilizer=float(ns.optimal_fertilizer),
+        optimal_pesticide=float(ns.optimal_pesticide),
     )
 
     final_score = compute_final_score(task=ns.task, scores=scores)
@@ -359,10 +418,15 @@ def step_simulation(
         "crop_stage_now": ns.crop_stage,
         "water_used": float(ns.water_used),
         "fertilizer_used": float(ns.fertilizer_used),
+        "pesticide_used": float(ns.pesticide_used),
+        "pest_level": float(ns.pest_level),
+        "soil_ph": float(ns.soil_ph),
+        "carbon_footprint": float(ns.carbon_footprint),
         "scores": {
             "yield_score": float(scores["yield_score"]),
             "profit_score": float(scores["profit_score"]),
             "efficiency_score": float(scores["efficiency_score"]),
+            "sustainability_score": float(scores["sustainability_score"]),
             "final_score": float(final_score),
         },
         "reward_components": reward_info,
@@ -376,6 +440,10 @@ def step_simulation(
             explain["risks"]["overwatering_risk"] = "Moisture significantly above ideal."
         if ns.fertility_level > params.ideal_fertility + 15:
             explain["risks"]["overfertilization_risk"] = "Fertility above ideal range."
+        if ns.pest_level > 25:
+            explain["risks"]["pest_risk"] = "High pest activity detected."
+        if ns.soil_ph < 5.5 or ns.soil_ph > 7.5:
+            explain["risks"]["soil_ph_risk"] = f"Soil pH ({ns.soil_ph:.1f}) is outside ideal range."
         if planted_wrong_crop:
             explain["risks"]["wrong_crop_risk"] = "Planted crop differs from optimal crop for this scenario."
 
@@ -392,7 +460,7 @@ def estimate_yield_amount(state: FarmState) -> float:
     if state.crop_planted is None:
         return 0.0
     params = CROP_PARAMS[state.crop_planted]
-    soil_health = compute_soil_health(state.soil_moisture, state.fertility_level, state.crop_planted)
+    soil_health = compute_soil_health(state.soil_moisture, state.fertility_level, state.crop_planted, state.soil_ph)
     stress_factor = 0.55 + 0.45 * soil_health
     return float(params.base_yield * state.growth_progress * stress_factor)
 
@@ -409,5 +477,6 @@ def estimate_profit_amount(*, state: FarmState, yield_amount: float, episode_con
         yield_amount * price_today
         - episode_config.irrigation_cost_per_unit * state.water_used
         - episode_config.fertilizer_cost_per_unit * state.fertilizer_used
+        - episode_config.pesticide_cost_per_unit * state.pesticide_used
     )
 

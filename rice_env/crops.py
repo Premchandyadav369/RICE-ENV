@@ -40,6 +40,22 @@ CROP_PARAMS: dict[str, CropParams] = {
         ideal_fertility=70.0,
         ideal_water_temperature_sensitivity=0.09,
     ),
+    "mustard": CropParams(
+        base_yield=750.0,
+        maturity_days=3,
+        base_growth_rate=0.26,
+        ideal_moisture=45.0,
+        ideal_fertility=60.0,
+        ideal_water_temperature_sensitivity=0.06,
+    ),
+    "sugarcane": CropParams(
+        base_yield=1500.0,
+        maturity_days=6,
+        base_growth_rate=0.15,
+        ideal_moisture=80.0,
+        ideal_fertility=85.0,
+        ideal_water_temperature_sensitivity=0.12,
+    ),
 }
 
 # Pricing per crop (base). Final daily prices are base + trend + noise.
@@ -47,5 +63,7 @@ CROP_BASE_PRICE: dict[str, float] = {
     "rice": 20.0,
     "wheat": 18.0,
     "maize": 19.0,
+    "mustard": 25.0,
+    "sugarcane": 12.0,
 }
 

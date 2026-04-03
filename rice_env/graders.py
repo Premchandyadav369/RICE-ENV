@@ -45,39 +45,45 @@ def get_optimal_crop(
     # Decision rules:
     # - Rice likes higher moisture + warm temps.
     # - Wheat likes moderate moisture + tolerates moderate heat.
-    # - Maize sits between, prefers good fertility and not-extreme heat.
-    if too_cold:
+    # - Maize prefers good fertility and moderate heat.
+    # - Mustard is drought tolerant and likes cooler weather.
+    # - Sugarcane is water intensive and likes heat.
+
+    if scenario == "heatwave":
+        if effective_rain > 90:
+            return "sugarcane"
         return "wheat"
+
+    if too_cold:
+        return "mustard"
 
     if very_hot:
-        # In very-hot scenarios, wheat is more forgiving than rice/maize.
+        if effective_rain > 80:
+            return "sugarcane"
         return "wheat"
 
-    if effective_rain >= 100:
-        # High water availability: rice tends to outperform.
-        if scenario == "flood":
-            # In floods, rice can suffer a bit; maize becomes competitive.
-            return "maize"
+    if effective_rain >= 110:
+        if scenario == "flood" or scenario == "monsoon":
+            return "rice"
+        return "sugarcane"
+
+    if effective_rain >= 80:
         return "rice"
 
-    if effective_rain >= 70:
-        # Moderate water: wheat tends to stabilize.
-        return "wheat"
+    if effective_rain >= 50:
+        return "maize"
 
-    # Low water: choose drought-tolerant crop.
-    if scenario == "drought":
-        return "wheat"
-    return "maize"
+    return "mustard"
 
 
-def _optimal_water_and_fertilizer(
+def _optimal_resources(
     *,
     crop: str,
     soil_type: str,
     rainfall_forecast: float,
     temperature: float,
     scenario: str,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """
     Estimated resource budgets for achieving “near-ideal” yield.
     Used to compute efficiency_score (0–1).
@@ -90,6 +96,10 @@ def _optimal_water_and_fertilizer(
         rain_factor = 0.65
     elif scenario == "flood":
         rain_factor = 1.15
+    elif scenario == "monsoon":
+        rain_factor = 1.4
+    elif scenario == "heatwave":
+        rain_factor = 0.6
     else:
         rain_factor = 1.0
 
@@ -109,7 +119,14 @@ def _optimal_water_and_fertilizer(
     temp_stress = max(0.0, abs(temperature - 30.0) / 15.0)
     optimal_fertilizer = (18.0 + 35.0 * temp_stress) * (params.ideal_fertility / 70.0)
 
-    return float(optimal_water), float(optimal_fertilizer)
+    # Pesticide demand
+    optimal_pesticide = 5.0
+    if scenario == "pest_outbreak":
+        optimal_pesticide = 15.0
+    elif scenario == "monsoon":
+        optimal_pesticide = 10.0
+
+    return float(optimal_water), float(optimal_fertilizer), float(optimal_pesticide)
 
 
 def compute_episode_optima(
@@ -147,7 +164,7 @@ def compute_episode_optima(
     base_price = CROP_BASE_PRICE[optimal_crop]
     optimal_market_price = base_price + 0.12 * mid_day
 
-    optimal_water, optimal_fertilizer = _optimal_water_and_fertilizer(
+    optimal_water, optimal_fertilizer, optimal_pesticide = _optimal_resources(
         crop=optimal_crop,
         soil_type=soil_type,
         rainfall_forecast=rainfall_forecast,
@@ -157,8 +174,12 @@ def compute_episode_optima(
 
     irrigation_cost_per_unit = 0.05
     fertilizer_cost_per_unit = 0.11
+    pesticide_cost_per_unit = 0.25
     optimal_profit = (
-        optimal_yield * optimal_market_price - irrigation_cost_per_unit * optimal_water - fertilizer_cost_per_unit * optimal_fertilizer
+        optimal_yield * optimal_market_price
+        - irrigation_cost_per_unit * optimal_water
+        - fertilizer_cost_per_unit * optimal_fertilizer
+        - pesticide_cost_per_unit * optimal_pesticide
     )
 
     return {
@@ -167,6 +188,7 @@ def compute_episode_optima(
         "optimal_profit": float(max(0.0, optimal_profit)),
         "optimal_water": float(max(1.0, optimal_water)),
         "optimal_fertilizer": float(max(1.0, optimal_fertilizer)),
+        "optimal_pesticide": float(max(1.0, optimal_pesticide)),
     }
 
 
@@ -176,10 +198,14 @@ def compute_scores(
     profit: float,
     water_used: float,
     fertilizer_used: float,
+    pesticide_used: float,
+    carbon_footprint: float,
+    soil_health: float,
     optimal_yield: float,
     optimal_profit: float,
     optimal_water: float,
     optimal_fertilizer: float,
+    optimal_pesticide: float,
 ) -> dict[str, float]:
     """
     Return continuous scores in [0, 1].
@@ -193,13 +219,20 @@ def compute_scores(
     # Efficiency: penalize wasted resources relative to “ideal budgets”.
     water_ratio = water_used / max(1.0, optimal_water)
     fert_ratio = fertilizer_used / max(1.0, optimal_fertilizer)
-    waste = 0.5 * (water_ratio + fert_ratio)
+    pest_ratio = pesticide_used / max(1.0, optimal_pesticide)
+    waste = (water_ratio + fert_ratio + pest_ratio) / 3.0
     efficiency_score = min(max(1.0 - waste, 0.0), 1.0)
+
+    # Sustainability score: based on carbon footprint and soil health
+    # Normalize carbon footprint: assume 500 is a high value
+    carbon_penalty = min(carbon_footprint / 500.0, 1.0)
+    sustainability_score = 0.5 * soil_health + 0.5 * (1.0 - carbon_penalty)
 
     return {
         "yield_score": float(yield_score),
         "profit_score": float(profit_score),
         "efficiency_score": float(efficiency_score),
+        "sustainability_score": float(sustainability_score),
     }
 
 
@@ -210,16 +243,17 @@ def compute_final_score(*, task: str, scores: dict[str, float]) -> float:
     yield_score = scores["yield_score"]
     profit_score = scores["profit_score"]
     efficiency_score = scores["efficiency_score"]
+    sustainability_score = scores["sustainability_score"]
 
     if task == "easy":
         # Crop selection is “easy” so focus on yield quality and ignore profit.
-        return min(max(yield_score * 1.0, 0.0), 1.0)
+        return min(max(0.8 * yield_score + 0.2 * sustainability_score, 0.0), 1.0)
     if task == "medium":
-        # Yield optimization: emphasize yield + mild efficiency.
-        return min(max(0.7 * yield_score + 0.3 * efficiency_score, 0.0), 1.0)
+        # Yield optimization: emphasize yield + efficiency + sustainability.
+        return min(max(0.6 * yield_score + 0.2 * efficiency_score + 0.2 * sustainability_score, 0.0), 1.0)
     # Hard:
     return min(
-        max(0.5 * profit_score + 0.3 * yield_score + 0.2 * efficiency_score, 0.0),
+        max(0.4 * profit_score + 0.2 * yield_score + 0.2 * efficiency_score + 0.2 * sustainability_score, 0.0),
         1.0,
     )
 

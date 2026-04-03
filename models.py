@@ -6,11 +6,11 @@ from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
 
 
-CropType = Literal["rice", "wheat", "maize"]
+CropType = Literal["rice", "wheat", "maize", "mustard", "sugarcane"]
 SoilType = Literal["loamy", "sandy", "clay"]
 CropStage = Literal["none", "sowing", "vegetative", "mature", "harvest"]
 TaskType = Literal["easy", "medium", "hard"]
-ScenarioType = Literal["normal", "drought", "flood"]
+ScenarioType = Literal["normal", "drought", "flood", "monsoon", "heatwave", "pest_outbreak"]
 
 
 class FarmAction(Action):
@@ -18,7 +18,7 @@ class FarmAction(Action):
     Single structured action. OpenEnv uses this model for type-safe validation.
     """
 
-    action_type: Literal["plant", "irrigate", "fertilize", "wait", "sell"] = Field(
+    action_type: Literal["plant", "irrigate", "fertilize", "wait", "sell", "pesticide"] = Field(
         ...,
         description="Action category.",
     )
@@ -42,6 +42,11 @@ class FarmAction(Action):
     # wait
     days: Optional[int] = Field(
         None, ge=0, le=3, description="How many days to wait (wait action)."
+    )
+
+    # pesticide
+    pesticide_qty: Optional[float] = Field(
+        None, ge=0.0, description="Pesticide quantity (pesticide action)."
     )
 
     # sell
@@ -72,6 +77,8 @@ class FarmObservation(Observation):
     rainfall_forecast: float = Field(..., ge=0.0)
     temperature: float = Field(..., ge=-10.0, le=60.0)
     market_price: Dict[str, float] = Field(..., description="Price per crop for today.")
+    pest_level: float = Field(..., ge=0.0, le=100.0)
+    soil_ph: float = Field(..., ge=0.0, le=14.0)
 
     # Crop state
     crop_planted: Optional[CropType] = Field(None, description="Currently planted crop.")
@@ -81,11 +88,13 @@ class FarmObservation(Observation):
     # Economic state
     profit_so_far: float
     yield_estimate: float
+    carbon_footprint: float
 
     # Per-episode scores (computed on termination)
     yield_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     profit_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     efficiency_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+    sustainability_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     final_score: Optional[float] = Field(None, ge=0.0, le=1.0)
 
     # Explainability: what the environment believes just happened.
@@ -116,17 +125,23 @@ class FarmState(State):
     fertility_level: float = 70.0
     water_level: float = 60.0
     fertilizer_stock: float = 80.0
+    pesticide_stock: float = 50.0
     rainfall_forecast: float = 80.0
     temperature: float = 30.0
+    pest_level: float = 5.0
+    soil_ph: float = 6.5
     market_price: Dict[str, float] = Field(default_factory=dict)
 
     # Resources used
     water_used: float = 0.0
     fertilizer_used: float = 0.0
+    pesticide_used: float = 0.0
+    carbon_footprint: float = 0.0
 
     # Stress accounting (for shaping + explanation)
     cumulative_overwater: float = 0.0
     cumulative_overfertilizer: float = 0.0
+    cumulative_pest_damage: float = 0.0
 
     # Rewards / scoring inputs
     yield_amount: float = 0.0
@@ -138,6 +153,7 @@ class FarmState(State):
     optimal_profit: float = 0.0
     optimal_water: float = 0.0
     optimal_fertilizer: float = 0.0
+    optimal_pesticide: float = 5.0
 
     explainability_last: Dict[str, Any] = Field(default_factory=dict)
 
